@@ -367,26 +367,24 @@ class Logics:
         return moves
     
     def knight_moves(self, color, board, index):
+        moves = []
+
         board_array = board.board_array
 
-        offsets = [-17, -15, -10, -6, 6, 10, 15, 17]
+        if color != gpc(board_array[index]):
+            return []
 
-        moves = []
-        row, col = divmod(index, 8)
+        knight_offsets = [-21, -19, -12, -8, 8, 12, 19, 21]
 
-        for offset in offsets:
-            new_index = index + offset
-            if 0 <= new_index < 64:
-                new_row, new_col = divmod(new_index, 8)
 
-                if abs(new_row - row) + abs(new_col - col) == 3 and abs(new_row - row) <= 2 and abs(new_col - col) <= 2:
-                    target_piece = board_array[new_index]
+        for offset in knight_offsets:
+            if index + offset not in ob:
+                if board_array[index + offset] == pieces["e"] or gpc(board_array[index + offset]) == goc(color):
+                    if gpc(board_array[index + offset]) == goc(color):
+                        moves.append(Move(index, index + offset, None, True))
+                    else:
+                        moves.append(Move(index, index + offset, None, False))
 
-                    if target_piece == pieces["e"]:
-                        if gpc(target_piece) != goc(color):
-                            moves.append(Move(index, new_index, None, True))
-                        else:
-                            moves.append(Move(index, new_index, None, False))
         return moves
     
     def bishop_moves(self, color, board, index):
@@ -692,6 +690,7 @@ class CLI:
         self.show_thought = True
         self.show_legal_moves = False
         self.show_eval = True
+        self.show_board = True
 
     def give_options(self, options, returner=None):
         for key, option in options.items():
@@ -751,11 +750,19 @@ class CLI:
                 self.show_legal_moves = True
             else:
                 self.show_legal_moves = False
+        
+        def change_show_board():
+            show_board = input("t/f > ")
+            if show_board.lower() == "t":
+                self.show_board = True
+            else:
+                self.show_board = False
 
         self.give_options({
                 "1": (f"Search Depth: {self.search_depth}", change_search_depth),
                 "2": (f"Show thought: {self.show_thought}", change_show_thought),
                 "3": (f"Show legal moves: {self.show_legal_moves}", change_show_legal_moves),
+                "4": (f"Show board: {self.show_board}", change_show_board),
                 "e": ("Exit", self.start)
         }, returner=self.configure)
 
@@ -780,8 +787,9 @@ class CLI:
         else:
             board = fen_string_to_board(fen_string)
 
-        print()
-        self.print_board(board)
+        if self.show_board:
+            print()
+            self.print_board(board)
 
         # Count captured pieces
         starting_counts = {
@@ -806,14 +814,9 @@ class CLI:
                 else:            # black piece
                     captured_white.extend([piece] * captured)
 
-        piece_icon_map = {
-            pieces["wp"]: "♙", pieces["wn"]: "♘", pieces["wb"]: "♗", pieces["wr"]: "♖", pieces["wq"]: "♕", pieces["wk"]: "♔",
-            pieces["bp"]: "♟", pieces["bn"]: "♞", pieces["bb"]: "♝", pieces["br"]: "♜", pieces["bq"]: "♛", pieces["bk"]: "♚",
-        }
-
         print()
-        print("Captured by White: ", " ".join(piece_icon_map[p] for p in captured_white) or "None")
-        print("Captured by Black: ", " ".join(piece_icon_map[p] for p in captured_black) or "None")
+        print("Captured by White: ", " ".join(pim[p] for p in captured_white) or "None")
+        print("Captured by Black: ", " ".join(pim[p] for p in captured_black) or "None")
 
         # Evaluate position
         eval_score = self.engine.eval(board)
@@ -847,20 +850,14 @@ class CLI:
     def print_board(self, board):
         board_array = board.board_array
 
-        piece_icon_map = {
-            pieces["wp"]: "♙", pieces["wn"]: "♘", pieces["wb"]: "♗", pieces["wr"]: "♖", pieces["wq"]: "♕", pieces["wk"]: "♔",
-            pieces["bp"]: "♟", pieces["bn"]: "♞", pieces["bb"]: "♝", pieces["br"]: "♜", pieces["bq"]: "♛", pieces["bk"]: "♚",
-            pieces["e"]: "."
-        }
-
         if self.play_as == colors["white"]:
             print("  a b c d e f g h")
             for rank in range(2, 10):  # ranks 8 → 1
                 row = []
                 for file in range(2, 10):  # files a → h
                     index = rank * 10 + file
-                    row.append(piece_icon_map.get(board_array[index], "?"))
-                print(f"{10 - rank} " + " ".join(row) + f" {10 - rank}")
+                    row.append(pim.get(board_array[index], "?"))
+                print(f"{rank - 1} " + " ".join(row) + f" {rank - 1}")
             print("  a b c d e f g h")
 
         elif self.play_as == colors["black"]:
@@ -869,8 +866,8 @@ class CLI:
                 row = []
                 for file in range(9, 1, -1):  # files h → a
                     index = rank * 10 + file
-                    row.append(piece_icon_map.get(board_array[index], "?"))
-                print(f"{rank - 1} " + " ".join(row) + f" {rank - 1}")
+                    row.append(pim.get(board_array[index], "?"))
+                print(f"{10 - rank} " + " ".join(row) + f" {10 - rank}")
             print("  h g f e d c b a")
 
     def play(self):
@@ -895,8 +892,9 @@ class CLI:
         current_board = default_board()
 
         while True:
-            print()
-            self.print_board(current_board)
+            if self.show_board:
+                print()
+                self.print_board(current_board)
 
             if current_board.current_color == self.play_as:
                 legal_moves = self.engine.logics.legal_moves(current_board)
