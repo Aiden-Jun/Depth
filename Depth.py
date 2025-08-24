@@ -24,7 +24,6 @@ pim = {
     pieces["bp"]: "♟", pieces["bn"]: "♞", pieces["bb"]: "♝", pieces["br"]: "♜", pieces["bq"]: "♛", pieces["bk"]: "♚",
 }
 
-
 pst = {
     "p": (   0,   0,   0,   0,   0,   0,   0,   0,
             78,  83,  86,  73, 102,  82,  85,  90,
@@ -76,6 +75,19 @@ pst = {
             17,  30,  -3, -14,   6,  -1,  40,  18),
 }
 
+def flip_pst_for_black(pst_white):
+    pst_black = {}
+    for piece, table in pst_white.items():
+        flipped = [0] * 64
+        for i in range(64):
+            r, f = divmod(i, 8)
+            mirror_i = (7 - r) * 8 + f
+            flipped[mirror_i] = table[i]
+        pst_black[piece] = flipped
+    return pst_black
+
+pst_black = flip_pst_for_black(pst)
+
 piece_to_pst = {
     1: 'p', 7: 'p',   # pawns
     2: 'n', 8: 'n',   # knights
@@ -103,18 +115,10 @@ for i in range(120):
         ob.append(i)
 
 def gpc(piece):
-    if piece == pieces["e"]:
-        return None
-    elif piece <= 6:
-        return colors["white"]
-    elif piece >= 7:
-        return colors["black"]
-    
+    return None if piece == pieces["e"] else (0 if piece <= 6 else 1)
+
 def goc(color):
-    if color == colors["white"]:
-        return colors["black"]
-    elif color == colors["black"]:
-        return colors["white"]
+    return 1 - color
     
 def index120_to_64(index120):
     rank = index120 // 10 - 2
@@ -125,55 +129,82 @@ def index_to_pos(index):
     return rank_map[int(str(index)[1])] + file_map[int(str(index)[0])]
 
 def cut_board_array(board_array):
-    cut_board = []
-    for index, sq in enumerate(board_array):
-        if index not in ob:
-            cut_board.append(sq)
-    return cut_board
+    return [sq for i, sq in enumerate(board_array) if i not in ob]
 
 def make_move(board, move):
-    new_board_array = board.board_array[:]
-    sp = move.sp
-    dp = move.dp
+    board_array = board.board_array
+    new_board_array = board_array[:]  # copy
 
-    # Move piece
-    new_board_array[dp] = new_board_array[sp]
+    sp, dp = move.sp, move.dp
+    moving_piece = new_board_array[sp]
+    moving_color = gpc(moving_piece)
+
+    # --- en passant capture (remove the pawn that was passed) ---
+    if moving_piece in (pieces["wp"], pieces["bp"]) and dp == board.en_pas_t and new_board_array[dp] == pieces["e"]:
+        # captured pawn is behind the destination square (relative to mover)
+        captured_sq = dp + (10 if moving_color == colors["white"] else -10)
+        new_board_array[captured_sq] = pieces["e"]
+
+    # --- basic move ---
+    new_board_array[dp] = moving_piece
     new_board_array[sp] = pieces["e"]
 
-    # Handle promotion
+    # --- promotion ---
     if move.promo is not None:
         new_board_array[dp] = move.promo
 
-    # Handle castling
+    # --- castling (move rook) ---
+    if moving_piece in (pieces["wk"], pieces["bk"]) and abs(sp - dp) == 2:
+        # kingside or queenside relative to 10x12
+        if dp > sp:  # kingside
+            rook_sp, rook_dp = sp + 3, sp + 1
+        else:       # queenside
+            rook_sp, rook_dp = sp - 4, sp - 1
+        new_board_array[rook_dp] = new_board_array[rook_sp]
+        new_board_array[rook_sp] = pieces["e"]
+
+    # --- castling rights bookkeeping ---
     castling_rights = board.castling_rights.copy()
-    if new_board_array[dp] in [pieces["wk"], pieces["bk"]]:
-        # Remove castling rights for that side
-        if new_board_array[dp] == pieces["wk"]:
-            castling_rights["wks"] = False
-            castling_rights["wqs"] = False
-        else:
-            castling_rights["bks"] = False
-            castling_rights["bqs"] = False
 
-        # Move the rook if castling
-        if abs(sp - dp) == 2:
-            if dp > sp:  # kingside
-                rook_sp = sp + 3
-                rook_dp = sp + 1
-            else:  # queenside
-                rook_sp = sp - 4
-                rook_dp = sp - 1
-            new_board_array[rook_dp] = new_board_array[rook_sp]
-            new_board_array[rook_sp] = pieces["e"]
+    # if a king moves, that side loses both rights
+    if moving_piece == pieces["wk"]:
+        castling_rights["wks"] = False
+        castling_rights["wqs"] = False
+    elif moving_piece == pieces["bk"]:
+        castling_rights["bks"] = False
+        castling_rights["bqs"] = False
 
-    # Switch turn
+    # if a rook moves off its original square, lose that side's corresponding right
+    if sp == 99: castling_rights["wks"] = False   # white h1
+    if sp == 92: castling_rights["wqs"] = False   # white a1
+    if sp == 29: castling_rights["bks"] = False   # black h8
+    if sp == 22: castling_rights["bqs"] = False   # black a8
+
+    # if a rook is captured on its original square, lose that right too
+    # (note: check the *destination* square after move, so look at the captured square in the original board)
+    captured_piece = board_array[dp]
+    if captured_piece == pieces["wr"]:
+        if dp == 99: castling_rights["wks"] = False
+        if dp == 92: castling_rights["wqs"] = False
+    elif captured_piece == pieces["br"]:
+        if dp == 29: castling_rights["bks"] = False
+        if dp == 22: castling_rights["bqs"] = False
+
+    # --- en passant target square for NEXT move ---
+    # set only if a pawn just did a two-square push
+    if moving_piece in (pieces["wp"], pieces["bp"]) and abs(dp - sp) == 20:
+        en_pas_t = (sp + dp) // 2  # the square passed over
+    else:
+        en_pas_t = None
+
+    # switch turn
     new_board_color = goc(board.current_color)
 
     return BoardState(
         new_board_array,
         current_color=new_board_color,
         castling_rights=castling_rights,
-        en_pas_t=None
+        en_pas_t=en_pas_t
     )
 
 def default_board():
@@ -298,74 +329,55 @@ class BoardState:
 class Logics:
     def pawn_moves(self, color, board, index, only_capture=False):
         moves = []
-        board_array = board.board_array
-        
-        if color != gpc(board_array[index]):
+        A = board.board_array
+        if color != gpc(A[index]):
             return []
 
-        # Pawn offsets
         if color == colors["white"]:
-            single_move = -10
-            double_move = -20
-            capture_left = -11
-            capture_right = -9
-            pawn_start = 8
-            pawn_end = 2
-            promo_pieces = [pieces["wq"], pieces["wr"], pieces["wb"], pieces["wn"]]
+            single, double, cl, cr = -10, -20, -11, -9
+            start_rank, end_rank = 8, 2
+            promos = [pieces["wq"], pieces["wr"], pieces["wb"], pieces["wn"]]
+            ep_dir = -10
         else:
-            single_move = 10
-            double_move = 20
-            capture_left = 9
-            capture_right = 11
-            pawn_start = 3
-            pawn_end = 9
-            promo_pieces = [pieces["bq"], pieces["br"], pieces["bb"], pieces["bn"]]
-    
-        # Capture left
-        if board_array[index + capture_left] != pieces["e"] and gpc(board_array[index + capture_left]) == goc(color):
-            target_rank = int((index + capture_left) / 10)
-            if target_rank == pawn_end:
-                for promo in promo_pieces:
-                    moves.append(Move(index, index + capture_left, promo, True))
-            else:
-                moves.append(Move(index, index + capture_left, None, True))
+            single, double, cl, cr = 10, 20, 9, 11
+            start_rank, end_rank = 3, 9
+            promos = [pieces["bq"], pieces["br"], pieces["bb"], pieces["bn"]]
+            ep_dir = 10
 
-        # Capture right
-        if board_array[index + capture_right] != pieces["e"] and gpc(board_array[index + capture_right]) == goc(color):
-            target_rank = int((index + capture_right) / 10)
-            if target_rank == pawn_end:
-                for promo in promo_pieces:
-                    moves.append(Move(index, index + capture_right, promo, True))
-            else:
-                moves.append(Move(index, index + capture_right, None, True))
-
-        # En passant
-        en_pas_t = board.en_pas_t
-        if en_pas_t is not None:
-            if index + capture_left == en_pas_t:
-                moves.append(Move(index, index + capture_left, None, True))
-            if index + capture_right == en_pas_t:
-                moves.append(Move(index, index + capture_right, None, True))
-
-        if only_capture == False:
-            # Double move
-            if int(index / 10) == pawn_start:
-                if board_array[index + single_move] == pieces["e"] and board_array[index + double_move] == pieces["e"]:
-                    moves.append(Move(index, index + double_move, None, False))
-
-            # Single move
-            if board_array[index + single_move] == pieces["e"]:
-                target_rank = int((index + single_move) / 10)
-                if target_rank == pawn_end:
-                    for promo in promo_pieces:
-                        moves.append(Move(index, index + single_move, promo, False))
+        # captures (left/right)
+        for off in (cl, cr):
+            to = index + off
+            if to not in ob and A[to] != pieces["e"] and gpc(A[to]) == goc(color):
+                r = to // 10
+                if r == end_rank:
+                    for p in promos:
+                        moves.append(Move(index, to, p, True))
                 else:
-                    moves.append(Move(index, index + single_move, None, False))
+                    moves.append(Move(index, to, None, True))
 
-        # Filter out off board moves
-        moves = [m for m in moves if m.dp not in ob]
+        # en passant (target square is empty but capturable)
+        if board.en_pas_t is not None:
+            for to in (index + cl, index + cr):
+                if to == board.en_pas_t and to not in ob:
+                    moves.append(Move(index, to, None, True))
+
+        if not only_capture:
+            # single push
+            to = index + single
+            if to not in ob and A[to] == pieces["e"]:
+                r = to // 10
+                if r == end_rank:
+                    for p in promos:
+                        moves.append(Move(index, to, p, False))
+                else:
+                    moves.append(Move(index, to, None, False))
+                # double push (only if single push was clear and on start rank)
+                to2 = index + double
+                if (index // 10) == start_rank and A[to2] == pieces["e"]:
+                    moves.append(Move(index, to2, None, False))
+
         return moves
-    
+
     def knight_moves(self, color, board, index):
         moves = []
 
@@ -387,67 +399,24 @@ class Logics:
 
         return moves
     
-    def bishop_moves(self, color, board, index):
+    def sliding_moves(self, color, board, index, offsets):
         moves = []
-
-        board_array = board.board_array
-
-        if color != gpc(board_array[index]):
-            return []
-        
-        bishop_offsets = [-11, -9, 9, 11]
-
-        for offset in bishop_offsets:
-            destination = index + offset
-            
-            while destination not in ob:
-                if board_array[destination] == pieces["e"]:
-                    moves.append(Move(index, destination, None, False))
-                
-                # Piece blocking
-                if gpc(board_array[destination]) == goc(color):
-                    moves.append(Move(index, destination, None, True))
+        for offset in offsets:
+            dest = index + offset
+            while dest not in ob:
+                piece = board.board_array[dest]
+                if piece == pieces["e"]:
+                    moves.append(Move(index, dest, None, False))
+                else:
+                    if gpc(piece) == goc(color):
+                        moves.append(Move(index, dest, None, True))
                     break
-                elif gpc(board_array[destination]) == color:
-                    break
-
-                destination += offset
-
+                dest += offset
         return moves
-    
-    def rook_moves(self, color, board, index):
-        moves = []
-        
-        board_array = board.board_array
 
-        if color != gpc(board_array[index]):
-            return []
-        
-        rook_offsets = [-10, 10, -1, 1]
-
-        for offset in rook_offsets:
-            destination = index + offset
-            
-            while destination not in ob:
-                if board_array[destination] == pieces["e"]:
-                    moves.append(Move(index, destination, None, False))
-                
-                # When there is a piece blocking
-                if gpc(board_array[destination]) == goc(color):
-                    moves.append(Move(index, destination, None, True))
-                    break
-                elif gpc(board_array[destination]) == color:
-                    break
-
-                destination += offset
-        
-        return moves
-    
-    def queen_moves(self, color, board, index):
-        moves = []
-        moves.extend(self.rook_moves(color, board, index))
-        moves.extend(self.bishop_moves(color, board, index))
-        return moves
+    def bishop_moves(self, c, b, i): return self.sliding_moves(c, b, i, [-11, -9, 9, 11])
+    def rook_moves(self, c, b, i):   return self.sliding_moves(c, b, i, [-10, 10, -1, 1])
+    def queen_moves(self, c, b, i):  return self.bishop_moves(c, b, i) + self.rook_moves(c, b, i)
     
     def is_index_attacked(self, index, board, attacker_color):
         board_array = board.board_array
@@ -487,43 +456,49 @@ class Logics:
     
     def king_moves(self, color, board, index):
         moves = []
-
-        board_array = board.board_array
-        
-        if color != gpc(board_array[index]):
+        A = board.board_array
+        if color != gpc(A[index]):
             return []
-        
-        castling_rights = board.castling_rights
 
+        castling_rights = board.castling_rights
         king_offsets = [-10, -9, -1, 1, 9, 10, 11, -11]
 
-        for offset in king_offsets:
-            if board_array[index + offset] == pieces["e"] or gpc(board_array[index + offset]) == goc(color):
-                if index + offset not in ob:
-                    if gpc(board_array[index + offset]) == goc(color):
-                        moves.append(Move(index, index + offset, None, True))
-                    else:
-                        moves.append(Move(index, index + offset, None, False))
+        # normal king steps (can’t step to an attacked square)
+        for off in king_offsets:
+            to = index + off
+            if to not in ob and (A[to] == pieces["e"] or gpc(A[to]) == goc(color)):
+                if not self.is_index_attacked(to, board, goc(color)):
+                    moves.append(Move(index, to, None, A[to] != pieces["e"]))
 
-        if color == colors["white"]:
-            # White kingside
-            if not self.is_index_attacked(96, board, colors["black"]) and not self.is_index_attacked(98, board, colors["black"]) and castling_rights["wks"] and index == 96 and board_array[index + 1] == pieces["e"] and board_array[index + 2] == pieces["e"] and board_array[index + 3] == pieces["wr"]:
-                moves.append(Move(index, index + 2, None, False))
+        # castling: squares must be empty and NOT attacked: start, through, and destination
+        if color == colors["white"] and index == 96:
+            # kingside: e1->g1 (pass through f1=97)
+            if castling_rights["wks"] and A[97] == pieces["e"] and A[98] == pieces["e"] and A[99] == pieces["wr"]:
+                if not self.is_index_attacked(96, board, colors["black"]) and \
+                   not self.is_index_attacked(97, board, colors["black"]) and \
+                   not self.is_index_attacked(98, board, colors["black"]):
+                    moves.append(Move(index, 98, None, False))
+            # queenside: e1->c1 (pass through d1=95)
+            if castling_rights["wqs"] and A[95] == pieces["e"] and A[94] == pieces["e"] and A[93] == pieces["e"] and A[92] == pieces["wr"]:
+                if not self.is_index_attacked(96, board, colors["black"]) and \
+                   not self.is_index_attacked(95, board, colors["black"]) and \
+                   not self.is_index_attacked(94, board, colors["black"]):
+                    moves.append(Move(index, 94, None, False))
 
-            # White queenside
-            if not self.is_index_attacked(96, board, colors["black"]) and not self.is_index_attacked(94, board, colors["black"]) and castling_rights["wqs"] and index == 96 and board_array[index - 1] == pieces["e"] and board_array[index - 2] == pieces["e"] and board_array[index -3] == pieces["e"] and board_array[index - 4] == pieces["wr"]:
-                moves.append(Move(index, index - 2, None, False))
-        elif color == colors["black"]:
-            # Black kingside
-            if not self.is_index_attacked(26, board, colors["white"]) and not self.is_index_attacked(28, board, colors["white"]) and castling_rights["bks"] and index == 26 and board_array[index + 1] == pieces["e"] and board_array[index + 2] == pieces["e"] and board_array[index + 3] == pieces["br"]:
-                moves.append(Move(index, index + 2, None, False))
+        if color == colors["black"] and index == 26:
+            # kingside: e8->g8 (f8=27)
+            if castling_rights["bks"] and A[27] == pieces["e"] and A[28] == pieces["e"] and A[29] == pieces["br"]:
+                if not self.is_index_attacked(26, board, colors["white"]) and \
+                   not self.is_index_attacked(27, board, colors["white"]) and \
+                   not self.is_index_attacked(28, board, colors["white"]):
+                    moves.append(Move(index, 28, None, False))
+            # queenside: e8->c8 (d8=25)
+            if castling_rights["bqs"] and A[25] == pieces["e"] and A[24] == pieces["e"] and A[23] == pieces["e"] and A[22] == pieces["br"]:
+                if not self.is_index_attacked(26, board, colors["white"]) and \
+                   not self.is_index_attacked(25, board, colors["white"]) and \
+                   not self.is_index_attacked(24, board, colors["white"]):
+                    moves.append(Move(index, 24, None, False))
 
-            # Black queenside
-            if not self.is_index_attacked(26, board, colors["white"]) and not self.is_index_attacked(24, board, colors["white"]) and castling_rights["bqs"] and index == 26 and board_array[index - 1] == pieces["e"] and board_array[index - 2] == pieces["e"] and board_array[index - 3] == pieces["e"] and board_array[index - 4] == pieces["br"]:
-                moves.append(Move(index, index - 2, None, False))
-
-        # Filter moves that put king in attack
-        moves = [m for m in moves if not self.is_index_attacked(m.dp, board, goc(color))]
         return moves
 
     def legal_moves(self, board):
@@ -584,8 +559,20 @@ class Engine:
         self.logics = Logics()
         self.show_thought = True
 
+    def is_in_check(self, board, color):
+        # find king
+        ks = None
+        for i, p in enumerate(board.board_array):
+            if p == (pieces["wk"] if color == colors["white"] else pieces["bk"]):
+                ks = i
+                break
+        return self.logics.is_index_attacked(ks, board, goc(color))
+
     def is_checkmate(self, board):
-        return self.logics.legal_moves(board) == []
+        # no legal moves AND king is in check
+        if self.logics.legal_moves(board):
+            return False
+        return self.is_in_check(board, board.current_color)
     
     def eval(self, board):
         eval_score = 0
@@ -603,15 +590,7 @@ class Engine:
                 if gpc(piece) == colors["white"]:
                     eval_score += int(pst[ptype][sq64] * pst_strength)
                 elif gpc(piece) == colors["black"]:
-                    # Flip the pst
-                    flipped = [0] * 64
-                    for sq in range(64):
-                        rank = sq // 8
-                        file = sq % 8
-                        flipped_sq = (7 - rank) * 8 + file
-                        flipped[sq] = pst[ptype][flipped_sq]
-                    
-                    eval_score -= int(flipped[sq64] * pst_strength)
+                    eval_score -= int(pst_black[ptype][sq64] * pst_strength)
 
         return eval_score
     
@@ -852,19 +831,19 @@ class CLI:
 
         if self.play_as == colors["white"]:
             print("  a b c d e f g h")
-            for rank in range(2, 10):  # ranks 8 → 1
+            for rank in range(2, 10):
                 row = []
-                for file in range(2, 10):  # files a → h
+                for file in range(2, 10):
                     index = rank * 10 + file
                     row.append(pim.get(board_array[index], "?"))
                 print(f"{rank - 1} " + " ".join(row) + f" {rank - 1}")
             print("  a b c d e f g h")
 
         elif self.play_as == colors["black"]:
-            print("  h g f e d c b a")  # flipped files
-            for rank in range(9, 1, -1):  # ranks 1 → 8
+            print("  h g f e d c b a")
+            for rank in range(9, 1, -1):
                 row = []
-                for file in range(9, 1, -1):  # files h → a
+                for file in range(9, 1, -1):
                     index = rank * 10 + file
                     row.append(pim.get(board_array[index], "?"))
                 print(f"{10 - rank} " + " ".join(row) + f" {10 - rank}")
